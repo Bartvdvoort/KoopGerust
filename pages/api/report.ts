@@ -31,7 +31,6 @@ type Data = {
   highBid?: string;
   acceptanceEstimates?: Record<string, string>;
   fullText?: string;
-  pricePerM2?: string;
   wasClamped?: boolean;
   originalBids?: Record<string, any>;
   detailedExplanation: string;
@@ -296,8 +295,6 @@ const sanitizeAiText = (txt?: string) => {
   // Remove acceptance header lines (e.g. 'Kans op acceptatie (indicatie)')
   // Remove acceptance header blocks (including following lines listing percentages)
   t = t.replace(/Kans op acceptatie[^\n]*[\s\S]*?(?:\n\s*\n|$)/gim, "");
-  // Remove lines that start with 'Kenmerken' (features)
-  t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
   // Remove lines that list internal keys like conservativeBid: 80%
   t = t.replace(/^\s*(conservativeBid|averageBid|highBid|adviceBid|advice)\s*[:=\-].*$/gim, "");
   // Remove lines that show percentages for common Dutch labels
@@ -310,7 +307,13 @@ const sanitizeAiText = (txt?: string) => {
     return !/(kans[^.?!\n]*acceptat|acceptat[^.?!\n]*kans|conservativeBid|averageBid|highBid|adviceBid|adviesbod|kans op acceptatie)/i.test(s);
   });
   t = filtered.join(" ");
-  // Normalize spaces and line breaks: collapse multiple spaces and multiple empty lines
+  // Remove lines that start with 'Kenmerken' and generic percentage lines
+  t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
+  t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
+  // Normalize spaces inside numbers like '€ 439. 500' -> '€ 439.500'
+  t = t.replace(/(\d)\s+([.,])/g, "$1$2");
+  t = t.replace(/([.,])\s+(\d)/g, "$1$2");
+  // Collapse multiple spaces and normalize empty lines
   t = t.replace(/[ \t\u00A0]{2,}/g, " ");
   t = t.replace(/\n{2,}/g, "\n\n");
   // Trim each line and the whole text
@@ -491,25 +494,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
             return on && on < listingPriceNum;
           }));
         });
-
-      // Compute price per m2 when possible
+      // Compute price per m2 when possible and build structured header
       const livingAreaRaw = scraped?.livingArea;
       const livingAreaNum = livingAreaRaw ? parseInt(String(livingAreaRaw).replace(/[^0-9]/g, ""), 10) : undefined;
       const pricePerM2Num = listingPriceNum && livingAreaNum ? Math.round(listingPriceNum / livingAreaNum) : undefined;
       const pricePerM2 = pricePerM2Num ? `€ ${pricePerM2Num.toLocaleString("nl-NL")}/m²` : undefined;
 
-      // Clean up raw scraped price text (remove stray spaces inside numbers)
+      // Clean and prefer formatted listing price
       const rawPriceText = String(scraped?.priceText ?? "Onbekend");
       const cleanedRawPrice = rawPriceText
         .replace(/(\d)\s+([.,])/g, "$1$2")
         .replace(/([.,])\s+(\d)/g, "$1$2")
         .replace(/\s{2,}/g, " ")
         .trim();
+      const listingDisplay = listingPriceNum ? `€ ${listingPriceNum.toLocaleString("nl-NL")}` : cleanedRawPrice;
 
-      // Structured header for detailed explanation
       const headerLines = [] as string[];
       headerLines.push(`Adres: ${scraped?.address ?? fundaUrl}`);
-      const listingDisplay = listingPriceNum ? `€ ${listingPriceNum.toLocaleString("nl-NL")}` : cleanedRawPrice;
       headerLines.push(`Vraagprijs: ${listingDisplay}`);
       headerLines.push(`Prijs per m2: ${pricePerM2 ?? "Onbekend"}`);
       headerLines.push(`Woonoppervlakte: ${scraped?.livingArea ?? "Onbekend"}`);

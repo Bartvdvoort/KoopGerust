@@ -132,14 +132,22 @@ export default function Home() {
       t = t.replace(/^\s*(conservativeBid|averageBid|highBid|adviceBid|advice)\s*[:=\-].*$/gim, "");
       // Remove lines that show percentages for common Dutch labels
       t = t.replace(/^\s*(voorzichtig|gemiddeld|hoog|adviesbod)\s*[:=\-]\s*\d+%.*$/gim, "");
-      // Remove generic key: 80% lines
+      // Remove generic key: 80% lines and 'Kenmerken' heading
       t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
+      t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
       // Split into sentences and filter out sentences mentioning acceptance chances or internal keys
       const sentences = t.match(/[^.?!\n]+[.?!\n]*/g) || [t];
       const filtered = sentences.filter((s) => {
-        return !/(kans[^.?!\n]*acceptat|acceptat[^.?!\n]*kans|conservativeBid|averageBid|highBid|adviceBid|adviesbod|kans op acceptatie)/i.test(s);
+        return !/(kans[^.?!\n]*acceptat|acceptat[^.?!\n]*kans|conservativeBid|averageBid|highBid|adviceBid|adviesbod|kans op acceptatie|acceptatiekans|aanvaardingskans)/i.test(s);
       });
       t = filtered.join(" ");
+      // Normalize numeric spacing like '€ 439. 500' -> '€ 439.500'
+      t = t.replace(/(\d)\s+([.,])/g, "$1$2");
+      t = t.replace(/([.,])\s+(\d)/g, "$1$2");
+      // Collapse multiple spaces and normalize empty lines
+      t = t.replace(/[ \t\u00A0]{2,}/g, " ");
+      t = t.replace(/\n{2,}/g, "\n\n");
+      t = t.split('\n').map((l: string) => l.trim()).join('\n');
       return t.trim();
     };
 
@@ -253,7 +261,7 @@ export default function Home() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(16);
     doc.setTextColor(13, 37, 85);
-    doc.text("Uitgebreide toelichting", margin, y);
+    doc.text("Samenvatting", margin, y);
     y += 10;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(11);
