@@ -218,6 +218,32 @@ a {
   box-shadow: 0 25px 50px rgba(15, 23, 42, 0.06);
 }
 
+.brand-small {
+  color: #1d4ed8;
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.report-meta {
+  color: #475569;
+  font-size: 0.95rem;
+}
+
+.report-value-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid rgba(37, 99, 235, 0.06);
+  margin-bottom: 0.75rem;
+}
+
+.report-value-row strong {
+  color: #0f172a;
+}
+
 .report-heading {
   margin-bottom: 1.75rem;
 }

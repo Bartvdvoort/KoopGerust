@@ -23,6 +23,17 @@ type Data = {
   address: string;
   valueExplanation: string;
   recommendedBid: string;
+  listingPriceRaw?: string;
+  listingPriceNumber?: number;
+  listingPriceDetected?: boolean;
+  conservativeBid?: string;
+  averageBid?: string;
+  highBid?: string;
+  acceptanceEstimates?: Record<string, string>;
+  fullText?: string;
+  pricePerM2?: string;
+  wasClamped?: boolean;
+  originalBids?: Record<string, any>;
   detailedExplanation: string;
   viewingAdvice: string;
   neighborhoodInfo: string;
@@ -55,61 +66,256 @@ const scrapeFundaListing = async (url: string) => {
   const $ = cheerio.load(html);
 
   const title = $("h1").first().text().trim();
-  const priceText = $(".object-header__price").text().trim() || $(".object-header__price-label").text().trim();
+  let priceText = $(".object-header__price").text().trim() || $(".object-header__price-label").text().trim();
   const postedText = $(".object-header__kicker").text().trim();
   const address = $(".object-header__title").text().trim() || title;
-  const details = $(".object-kenmerken").text().replace(/\s+/g, " ").trim();
+  // Try to extract feature list (woonoppervlakte, kamers, bouwjaar, energielabel)
+  const featuresText = $(".object-kenmerken, .object-kenmerken__list").text().replace(/\s+/g, " ").trim();
+
+  // Heuristics: search for numbers followed by m2, kamers, bouwjaar, etc.
+  let livingArea: string | undefined = undefined;
+  let rooms: string | undefined = undefined;
+  let yearBuilt: string | undefined = undefined;
+
+  // Primary heuristics from the featuresText
+  const livingAreaMatch = featuresText.match(/(woonoppervlakte|woonopp|woonopp\.|oppervlakte woning)[:\s]*([0-9]{1,4})/i) || featuresText.match(/([0-9]{1,4})\s*m\b/i);
+  const roomsMatch = featuresText.match(/(kamers|slaapkamers|aantal kamers)[:\s]*([0-9]{1,2})/i);
+  const yearMatch = featuresText.match(/(bouwjaar|jaar)[:\s]*([0-9]{4})/i) || featuresText.match(/gebouwd\s+in\s+([0-9]{4})/i);
+
+  if (livingAreaMatch) livingArea = livingAreaMatch[2];
+  if (roomsMatch) rooms = roomsMatch[2];
+  if (yearMatch) yearBuilt = yearMatch[2];
+
+  // Try JSON-LD embedded structured data (often present on listing pages)
+  try {
+    $('script[type="application/ld+json"]').each((i, el) => {
+      try {
+        const jsonText = $(el).contents().text();
+        if (!jsonText) return;
+        const obj = JSON.parse(jsonText);
+        const items = Array.isArray(obj) ? obj : [obj];
+        for (const it of items) {
+          if (!it) continue;
+          // floor size
+          const floor = (it.floorSize && (it.floorSize.value || it.floorSize)) || it.floorSize;
+          if (!livingArea && floor) {
+            const f = typeof floor === 'object' ? (floor.value || floor['@value']) : floor;
+            const num = String(f).match(/([0-9]{1,4})/);
+            if (num) livingArea = num[1];
+          }
+          // number of rooms
+          const roomsVal = it.numberOfRooms || it.numberOfRoomsTotal || it.roomCount;
+          if (!rooms && roomsVal) {
+            const rn = String(roomsVal).match(/([0-9]{1,2})/);
+            if (rn) rooms = rn[1];
+          }
+          // year built
+          const yearVal = it.yearBuilt || it.dateBuilt || it.contractDate;
+          if (!yearBuilt && yearVal) {
+            const yn = String(yearVal).match(/(19|20)\d{2}/);
+            if (yn) yearBuilt = yn[0];
+          }
+        }
+      } catch (e) {
+        // ignore JSON parse errors
+      }
+    });
+  } catch (e) {
+    // ignore
+  }
+
+  // Fallback: search the raw HTML for other common labels/patterns
+  if (!livingArea) {
+    const htmlAreaMatch = html.match(/(woonoppervlakte|oppervlakte woning|woonoppervlakte[:\s]*)[^0-9]{0,6}([0-9]{1,4})\s*m/i) || html.match(/([0-9]{1,4})\s*m2/i);
+    if (htmlAreaMatch) livingArea = htmlAreaMatch[2] || htmlAreaMatch[1];
+  }
+
+  if (!rooms) {
+    const htmlRoomsMatch = html.match(/(aantal kamers|kamers|slaapkamers)[:\s]*([0-9]{1,2})/i) || html.match(/([0-9]{1,2})\s*kamer/i);
+    if (htmlRoomsMatch) rooms = htmlRoomsMatch[2] || htmlRoomsMatch[1];
+  }
+
+  if (!yearBuilt) {
+    const htmlYearMatch = html.match(/(bouwjaar|jaar)[:\s]*([0-9]{4})/i) || html.match(/gebouwd\s+in\s+([0-9]{4})/i);
+    if (htmlYearMatch) yearBuilt = htmlYearMatch[2] || htmlYearMatch[1];
+  }
+
+  // Listing id from URL
+  const listingIdMatch = url.match(/\/([0-9]+)\/$/) || url.match(/-([0-9]+)\//);
+  const listingId = listingIdMatch ? listingIdMatch[1] : undefined;
+
+  // Fallback: try to find a currency-like string in the raw HTML if selector lookup failed
+  if (!priceText) {
+    const htmlPriceMatch = html.match(/€\s?[0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?/);
+    if (htmlPriceMatch) {
+      priceText = htmlPriceMatch[0];
+    }
+  }
 
   return {
     address: address || url,
     priceText: priceText || "Onbekend",
     postedText: postedText || "",
-    details: details || "Geen extra kenmerken gevonden",
-  };
+    details: featuresText || "Geen extra kenmerken gevonden",
+    livingArea,
+    rooms,
+    yearBuilt,
+    listingId,
+    url,
+  } as any;
 };
 
-const buildPrompt = (input: string, scraped: { address: string; priceText: string; postedText: string; details: string } | null) => {
+const buildPrompt = (input: string, scraped: any | null) => {
+  const listingPrice = scraped?.priceText || "Onbekend";
   const intro = scraped
-    ? `Hieronder staan de gegevens van een woning die mogelijk van Funda komt:\n- Adres / titel: ${scraped.address}\n- Prijs: ${scraped.priceText}\n- Extra info: ${scraped.details}\n` 
-    : `Gebruiker heeft de volgende woningquery opgegeven: ${input}\n`; 
+    ? `Gegeven de volgende Funda-woninggegevens:\n- Adres / titel: ${scraped.address}\n- Vraagprijs: ${scraped.priceText}\n- Kenmerken: ${scraped.details}\n- Woonoppervlakte: ${scraped.livingArea || "onbekend"}\n- Kamers: ${scraped.rooms || "onbekend"}\n- Bouwjaar: ${scraped.yearBuilt || "onbekend"}\n` 
+    : `Gebruiker heeft de volgende woningquery opgegeven: ${input}\n`;
 
   return `${intro}
-Geef een Nederlandse analyse voor een particulier die in een verkopersmarkt zoekt naar een realistisch bod.
-Gebruik alleen actuele marktgegevens en recente transactiegegevens: Kadaster, CBS, PDOK, gemeentelijke open data, energielabel, BAG, Funda en recente prijsontwikkelingen van maximaal 3 maanden oud. Zoek op Funda naar vergelijkbare woningen in de buurt en gebruik deze als referentie, per voorkeur in dezelfde straat, reken daar ongeveer 5 tot 10% bovenop. Het zoeken op funda is essentieel voor het rapport, zoek actief op het web.
-Vermijd verouderde waarderingen; een oude referentieprijs kan een te laag bod opleveren. Baseer je inschatting op de nieuwste beschikbare vergelijkbare transacties, huidige vraag, en recente buurtontwikkelingen.
-1. Begin het antwoord met het aanbevolen bod in euro's. Je gemiddelde gok ligt te laag, dus verhoog het bod met 30% boven de gemiddelde referentieprijs van vergelijkbare woningen in de buurt. Geef dit bod duidelijk aan in euro's, bijvoorbeeld: "Bod: € 350.000". Je mag niet benoemen dat je hoger zit dan de gemiddelde referentieprijs, maar je mag wel een hogere prijs adviseren. Vermijd het gebruik van termen als "advies", "aanbeveling" of "suggestie". Geef alleen het bod in euro's, bijvoorbeeld: "Bod: € 350.000".
-2. Geef daarna een duidelijke en rijk onderbouwde toelichting waarom dit bod passend is voor deze woning.
-3. Beschrijf vervolgens de verwachte waarde van de woning en de belangrijkste onderbouwing.
-4. Voeg een extra sectie toe over de woonwijk: scholen, parkjes, voorzieningen en sfeer. Kijk naar het adres en baseer de gegevens op openbaarbeschikbare informatie op het internet.
-5. Schrijf praktisch bezichtigingsadvies: waarop de koper moet letten bij een bezichtiging voor deze woning, specifiek voor deze woning. Waar moet men op letten, wie nemen ze mee, welke vragen zijn belangrijk, en wat kan men verwachten? Probeer het specifiek te maken voor deze woning.
-6. Schrijf op de tweede pagina een uitgebreide toelichting, met het bod en het maximale wat men kan verwachten van de concurrentie. Vermijd juridische of financiële adviesclaims. Geef geen garantie op de waarde of het bod, maar geef een realistische inschatting gebaseerd op de huidige markt en recente transacties. 
+Je bent een ervaren Nederlandse woninganalist. Schrijf een helder, praktisch en goed onderbouwd rapport voor een particuliere koper in een verkopersmarkt.
 
-Antwoord in duidelijke, begrijpelijke taal zonder juridische advies. Let er bij de opmaak op dat het er menselijk uitziet en dat het goed leesbaar is. Vermijd opsommingen en gebruik korte alinea's. Gebruik geen HTML of Markdown, alleen platte tekst.
-Wees consistent in de rapporten.
+Belangrijke instructies (Nederlands):
+- Controleer de vraagprijs (vraagprijs zoals opgegeven op Funda: ${listingPrice}). Je MAG NOOIT een bod adviseren dat lager is dan de vraagprijs die op Funda staat. Als je normaal gesproken een lager 'voorzichtig' bod zou geven, gebruik dan in plaats daarvan minimaal de vraagprijs.
+- Geef vier biedingen: conservativeBid, averageBid, highBid en adviceBid. Voor elk bod geef je ook een korte inschatting in procenten of een korte zin van de kans dat dat bod geaccepteerd wordt (bijv. "40% kans" of "laag/matig/hoog").
+- Geef daarnaast een korte valueExplanation, neighborhoodInfo en viewingAdvice.
+- Tot slot: lever het volledige, onbewerkte antwoord mee als fullText zodat het in het PDF opgenomen kan worden.
 
-Format:
-Bod: <bodadvies>
-Toelichting: <uitgebreide toelichting>
-Waarde: <korte waarde-uitleg>
-Woonwijk: <wijknaam, scholen, parkjes, faciliteiten en sfeer>
-Bezichtigingsadvies: <praktische aandachtspunten>
+Outputvereiste:
+Antwoord uitsluitend met één enkele JSON-object (zonder extra tekst) met de volgende keys: "conservativeBid", "averageBid", "highBid", "adviceBid", "acceptanceEstimates", "valueExplanation", "neighborhoodInfo", "viewingAdvice", "fullText".
+
+Formatvoorbeeld (moet exact parsebaar JSON zijn):
+{
+  "conservativeBid": "€ 350.000",
+  "averageBid": "€ 365.000",
+  "highBid": "€ 385.000",
+  "adviceBid": "€ 365.000",
+  "acceptanceEstimates": { "conservativeBid": "70%", "averageBid": "50%", "highBid": "30%", "adviceBid": "50%" },
+  "valueExplanation": "Korte uitleg over waarde en vergelijking...",
+  "neighborhoodInfo": "Wijk, scholen, voorzieningen...",
+  "viewingAdvice": "Praktische tips voor bezichtiging...",
+  "fullText": "Hier komt het volledige onbewerkte rapport met alle toelichting."
+}
+
+Belangrijk: Als je bij sommige velden onzeker bent, geef dan eerlijk een korte tekst met de reden. Gebruik altijd euro-formattering met symbool € en punten als duizendtalscheiding waar passend. Gebruik alleen platte tekst in de values (geen HTML of Markdown). Zorg dat alle biedingen minimaal gelijk zijn aan de vermeldde vraagprijs (indien beschikbaar).
+
+Schrijf het antwoord in het Nederlands.
 `;
 };
 
-const parseOpenAIResponse = (text: string) => {
+const parseOpenAIResponse = (text: string, scraped: any | null) => {
+  // Attempt to find a JSON object in the model output
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  let parsedJson: any = null;
+
+  if (jsonMatch) {
+    try {
+      parsedJson = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      // ignore parse error and fall back
+      parsedJson = null;
+    }
+  }
+
+  const ensureCurrency = (v: any) => {
+    if (!v) return undefined;
+    if (typeof v === "number") return `€ ${v.toLocaleString("nl-NL")}`;
+    if (typeof v === "string") return v.trim();
+    return String(v);
+  };
+
+  const parseFallbackNumber = (priceText: string | undefined) => {
+    if (!priceText) return undefined;
+    const digits = priceText.replace(/[^.0-9,]/g, "").replace(/\./g, "").replace(/,/g, "");
+    const num = parseInt(digits || "", 10);
+    return Number.isFinite(num) ? num : undefined;
+  };
+
+  const listingPriceNum = parseFallbackNumber(scraped?.priceText);
+
+  if (parsedJson) {
+    // Ensure bids are not below listing price (if known)
+    const clampBid = (s: any) => {
+      if (!s) return s;
+      const num = parseFallbackNumber(String(s));
+      if (listingPriceNum && num && num < listingPriceNum) {
+        // replace with listing price formatted
+        return `€ ${listingPriceNum.toLocaleString("nl-NL")}`;
+      }
+      return ensureCurrency(s);
+    };
+
+    const conservativeBid = clampBid(parsedJson.conservativeBid);
+    const averageBid = clampBid(parsedJson.averageBid);
+    const highBid = clampBid(parsedJson.highBid);
+    const adviceBid = clampBid(parsedJson.adviceBid) || averageBid || conservativeBid || highBid;
+
+    return {
+      valueExplanation: parsedJson.valueExplanation || parsedJson.waarde || "Kan de waarde niet exact inschatten.",
+      recommendedBid: adviceBid || "Geen concreet adviesbod beschikbaar.",
+      conservativeBid,
+      averageBid,
+      highBid,
+      acceptanceEstimates: parsedJson.acceptanceEstimates || parsedJson.acceptanceEstimates || undefined,
+      detailedExplanation: parsedJson.valueExplanation || parsedJson.toelichting || (parsedJson.fullText ? parsedJson.fullText.substring(0, 800) : "Geen uitgebreide toelichting beschikbaar."),
+      viewingAdvice: parsedJson.viewingAdvice || parsedJson.bezichtigingsadvies || "Geen bezichtigingsadvies beschikbaar.",
+      neighborhoodInfo: parsedJson.neighborhoodInfo || parsedJson.woonwijk || "Geen aanvullende woonwijkinformatie beschikbaar.",
+      fullText: parsedJson.fullText || text,
+    };
+  }
+
+  // Fallback parsing when model didn't output JSON
   const bidMatch = text.match(/Bod:\s*([\s\S]*?)(?=(?:\n(?:Toelichting:|Waarde:|Woonwijk:|Bezichtigingsadvies:)|$))/i);
   const detailMatch = text.match(/Toelichting:\s*([\s\S]*?)(?=(?:\n(?:Bod:|Waarde:|Woonwijk:|Bezichtigingsadvies:)|$))/i);
   const valueMatch = text.match(/Waarde:\s*([\s\S]*?)(?=(?:\n(?:Bod:|Toelichting:|Woonwijk:|Bezichtigingsadvies:)|$))/i);
   const neighborhoodMatch = text.match(/Woonwijk:\s*([\s\S]*?)(?=(?:\n(?:Bod:|Toelichting:|Waarde:|Bezichtigingsadvies:)|$))/i);
   const viewingAdviceMatch = text.match(/Bezichtigingsadvies:\s*([\s\S]*?)$/i);
 
+  // Derive simple bids based on listing price when possible
+  const listing = listingPriceNum || 0;
+  const cons = listing ? `€ ${Math.round(listing * 1).toLocaleString("nl-NL")}` : undefined;
+  const avg = listing ? `€ ${Math.round(listing * 1.03).toLocaleString("nl-NL")}` : undefined;
+  const high = listing ? `€ ${Math.round(listing * 1.08).toLocaleString("nl-NL")}` : undefined;
+
   return {
     valueExplanation: valueMatch ? valueMatch[1].trim() : "Kan de waarde niet exact inschatten.",
-    recommendedBid: bidMatch ? bidMatch[1].trim() : "Kan geen bod adviseren.",
-    detailedExplanation: detailMatch ? detailMatch[1].trim() : "Kan geen uitgebreide toelichting geven.",
-    viewingAdvice: viewingAdviceMatch ? viewingAdviceMatch[1].trim() : "Kan geen bezichtigingsadvies geven.",
+    recommendedBid: avg || (bidMatch ? bidMatch[1].trim() : "Geen concreet bod beschikbaar."),
+    conservativeBid: cons,
+    averageBid: avg,
+    highBid: high,
+    acceptanceEstimates: { conservativeBid: "onbekend", averageBid: "onbekend", highBid: "onbekend" },
+    detailedExplanation: detailMatch ? detailMatch[1].trim() : (text.substring(0, 800) || "Geen uitgebreide toelichting beschikbaar."),
+    viewingAdvice: viewingAdviceMatch ? viewingAdviceMatch[1].trim() : "Geen bezichtigingsadvies beschikbaar.",
     neighborhoodInfo: neighborhoodMatch ? neighborhoodMatch[1].trim() : "Geen aanvullende woonwijkinformatie beschikbaar.",
+    fullText: text,
   };
+};
+
+const sanitizeAiText = (txt?: string) => {
+  if (!txt) return txt || "";
+  let t = String(txt || "");
+  // Remove acceptance header lines (e.g. 'Kans op acceptatie (indicatie)')
+  // Remove acceptance header blocks (including following lines listing percentages)
+  t = t.replace(/Kans op acceptatie[^\n]*[\s\S]*?(?:\n\s*\n|$)/gim, "");
+  // Remove lines that start with 'Kenmerken' (features)
+  t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
+  // Remove lines that list internal keys like conservativeBid: 80%
+  t = t.replace(/^\s*(conservativeBid|averageBid|highBid|adviceBid|advice)\s*[:=\-].*$/gim, "");
+  // Remove lines that show percentages for common Dutch labels
+  t = t.replace(/^\s*(voorzichtig|gemiddeld|hoog|adviesbod)\s*[:=\-]\s*\d+%.*$/gim, "");
+  // Remove lines that show keys followed by percentage (generic)
+  t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
+  // Remove sentences that reference acceptance chances or internal keys (also handles inline sentences)
+  const sentences = t.match(/[^.?!\n]+[.?!\n]*/g) || [t];
+  const filtered = sentences.filter((s) => {
+    return !/(kans[^.?!\n]*acceptat|acceptat[^.?!\n]*kans|conservativeBid|averageBid|highBid|adviceBid|adviesbod|kans op acceptatie)/i.test(s);
+  });
+  t = filtered.join(" ");
+  // Normalize spaces and line breaks: collapse multiple spaces and multiple empty lines
+  t = t.replace(/[ \t\u00A0]{2,}/g, " ");
+  t = t.replace(/\n{2,}/g, "\n\n");
+  // Trim each line and the whole text
+  t = t.split('\n').map(l => l.trim()).join('\n');
+  return t.trim();
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data | ErrorData>) {
@@ -130,37 +336,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 
     let scraped = null;
 
-    // Normalize input: accept labeled multiline OR the client-side normalized single-line format
-    // Labeled format (optional):
-    // Straatnaam: <straat>\nHuisnummer: <nummer>\nPostcode: <1234AB>
-    const labeledRegex = /^\s*Straatnaam:\s*(.+)\r?\n\s*Huisnummer:\s*(\d+\w?)\r?\n\s*Postcode:\s*(\d{4}\s*[A-Za-z]{2})\s*$/i;
+    // Enforce Funda-only input: the API requires a full Funda listing URL.
+    const fundaUrl = extractFundaUrl(query);
 
-    let normalizedQuery = query;
-    const labeledMatch = query.match(labeledRegex);
-    if (labeledMatch) {
-      const street = labeledMatch[1].trim();
-      const number = labeledMatch[2].trim();
-      const pc = labeledMatch[3].replace(/\s+/g, "").toUpperCase();
-      normalizedQuery = `${street} ${number}, ${pc}`;
+    if (!fundaUrl) {
+      return res.status(400).json({ error: 'Voer een volledige Funda-link in. Andere invoer wordt niet ondersteund.' });
     }
 
-    // single-line format: "Straatnaam 123, 1056AB"
-    const singleLineRegex = /^.+\s+\d+\w?,\s*\d{4}\s*[A-Za-z]{2}$/i;
-
-    const fundaUrl = extractFundaUrl(normalizedQuery);
-
-    if (!fundaUrl && !labeledMatch && !singleLineRegex.test(normalizedQuery.trim())) {
-      return res.status(400).json({
-        error: "Voer het adres in als Straatnaam, Huisnummer en Postcode (of plak een volledige Funda-link).",
-      });
-    }
-
-    if (fundaUrl) {
-      try {
-        scraped = await scrapeFundaListing(fundaUrl);
-      } catch (error) {
-        console.warn("Funda scraping error:", error);
-      }
+    try {
+      scraped = await scrapeFundaListing(fundaUrl);
+    } catch (error) {
+      console.warn("Funda scraping error:", error);
     }
 
     if (!process.env.OPENAI_API_KEY) {
@@ -168,11 +354,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     }
 
     const openai = createOpenAI();
-    const prompt = buildPrompt(normalizedQuery, scraped);
+    const prompt = buildPrompt(fundaUrl, scraped);
 
     if (debugMode) {
       console.log("[DEBUG] Opbouw prompt voor report:");
-      console.log("[DEBUG] Query:", normalizedQuery);
+      console.log("[DEBUG] Query:", fundaUrl);
       console.log("[DEBUG] Scraped data:", scraped);
       console.log("[DEBUG] Prompt:\n", prompt);
     }
@@ -191,13 +377,170 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     });
 
     const text = completion.choices?.[0]?.message?.content ?? "";
-    const parsed = parseOpenAIResponse(text);
+    const parsed = parseOpenAIResponse(text, scraped);
 
-    return res.status(200).json({
-      address: scraped?.address ?? normalizedQuery,
-      ...parsed,
-      debugInfo: debugMode ? `Prompt:\n${prompt}\n\nAI-antwoord:\n${text}` : undefined,
-    });
+      // Ensure bids are not below listing price (final safety clamp)
+      const parseCurrencyToNumber = (s: any) => {
+        if (!s) return undefined;
+        if (typeof s === "number") return s;
+        const str = String(s);
+        const digits = str.replace(/[^0-9.,]/g, "").replace(/\./g, "").replace(/,/g, "");
+        const num = parseInt(digits || "", 10);
+        return Number.isFinite(num) ? num : undefined;
+      };
+
+      const formatCurrency = (n: number | undefined) => {
+        if (!n && n !== 0) return undefined;
+        return `€ ${n.toLocaleString("nl-NL")}`;
+      };
+
+      const listingPriceNum = parseCurrencyToNumber(scraped?.priceText);
+
+      const clampToListing = (value: any) => {
+        const num = parseCurrencyToNumber(value);
+        if (listingPriceNum && num && num < listingPriceNum) return formatCurrency(listingPriceNum);
+        if (num) return formatCurrency(num);
+        // If value is a string without numbers, just return as-is
+        return value;
+      };
+
+      const isPercentageLike = (v: any) => {
+        if (!v || typeof v !== "string") return false;
+        if (/%/.test(v)) return true;
+        if (/\b(kans|chance|accept|kansrijk)\b/i.test(v)) return true;
+        return false;
+      };
+
+      // Move accidental percentage values from bid fields into acceptanceEstimates
+      const originalBids: Record<string, any> = {};
+      const acceptance: Record<string, string> = parsed.acceptanceEstimates ? { ...parsed.acceptanceEstimates } : {};
+
+      const fields = ["conservativeBid", "averageBid", "highBid", "recommendedBid"] as const;
+      fields.forEach((f) => {
+        const raw = (parsed as any)[f];
+        if (raw !== undefined && raw !== null) {
+          originalBids[f] = raw;
+          if (isPercentageLike(raw)) {
+            // Treat as acceptance estimate
+            acceptance[f] = String(raw).trim();
+            (parsed as any)[f] = undefined;
+          }
+        }
+      });
+
+      // Prefer AI-provided bids. If AI doesn't provide numeric bids, fall back to derived values.
+      let finalConservative: any;
+      let finalAverage: any;
+      let finalHigh: any;
+      let finalAdvice: any;
+
+      const parsedCon = (parsed as any).conservativeBid;
+      const parsedAvg = (parsed as any).averageBid;
+      const parsedHigh = (parsed as any).highBid;
+      const parsedAdvice = (parsed as any).recommendedBid || (parsed as any).adviceBid;
+
+      const parsedConNum = parseCurrencyToNumber(parsedCon);
+      const parsedAvgNum = parseCurrencyToNumber(parsedAvg);
+      const parsedHighNum = parseCurrencyToNumber(parsedHigh);
+      const parsedAdviceNum = parseCurrencyToNumber(parsedAdvice);
+
+      // If AI provided bids, use them (after formatting and clamping). Otherwise, derive from listing price as a fallback.
+      if (parsedConNum) finalConservative = clampToListing(parsedConNum);
+      if (parsedAvgNum) finalAverage = clampToListing(parsedAvgNum);
+      if (parsedHighNum) finalHigh = clampToListing(parsedHighNum);
+      if (parsedAdviceNum) finalAdvice = clampToListing(parsedAdviceNum);
+
+      // Fallback derived values when listing price is available
+      if (listingPriceNum) {
+        const deriveCon = Math.round(listingPriceNum * 0.965); // ~ -3.5%
+        const deriveAdvice = Math.round(listingPriceNum * 1.105); // ~ +10.5%
+        const deriveHigh = Math.round(listingPriceNum * 1.18); // ~ +18%
+        const deriveAvg = Math.round((deriveCon + deriveAdvice) / 2);
+
+        if (!finalConservative) finalConservative = formatCurrency(deriveCon);
+        if (!finalAverage) finalAverage = formatCurrency(deriveAvg);
+        if (!finalHigh) finalHigh = formatCurrency(deriveHigh);
+        if (!finalAdvice) finalAdvice = formatCurrency(deriveAdvice);
+      } else {
+        // no listing price: use parsed values if any, else leave undefined
+        if (!finalConservative && parsedCon) finalConservative = clampToListing(parsedCon);
+        if (!finalAverage && parsedAvg) finalAverage = clampToListing(parsedAvg);
+        if (!finalHigh && parsedHigh) finalHigh = clampToListing(parsedHigh);
+        if (!finalAdvice && parsedAdvice) finalAdvice = clampToListing(parsedAdvice);
+      }
+
+      // Ensure average sits between conservative and advice
+      const toNumber = (v: any) => parseCurrencyToNumber(v) || undefined;
+      const consN = toNumber(finalConservative);
+      const advN = toNumber(finalAdvice);
+      const avgN = toNumber(finalAverage);
+      if (consN && advN) {
+        const mid = Math.round((consN + advN) / 2);
+        if (!avgN || avgN < Math.min(consN, advN) || avgN > Math.max(consN, advN)) {
+          finalAverage = formatCurrency(mid);
+        }
+      }
+
+      const wasClamped = Object.keys(originalBids).length > 0 ||
+        [finalConservative, finalAverage, finalHigh, finalAdvice].some((v) => {
+          // detect if we forced to listing price
+          if (!v || !listingPriceNum) return false;
+          const num = parseCurrencyToNumber(v);
+          return !!(num && listingPriceNum && num >= listingPriceNum && originalBids && Object.values(originalBids).some(ob => {
+            const on = parseCurrencyToNumber(ob);
+            return on && on < listingPriceNum;
+          }));
+        });
+
+      // Compute price per m2 when possible
+      const livingAreaRaw = scraped?.livingArea;
+      const livingAreaNum = livingAreaRaw ? parseInt(String(livingAreaRaw).replace(/[^0-9]/g, ""), 10) : undefined;
+      const pricePerM2Num = listingPriceNum && livingAreaNum ? Math.round(listingPriceNum / livingAreaNum) : undefined;
+      const pricePerM2 = pricePerM2Num ? `€ ${pricePerM2Num.toLocaleString("nl-NL")}/m²` : undefined;
+
+      // Clean up raw scraped price text (remove stray spaces inside numbers)
+      const rawPriceText = String(scraped?.priceText ?? "Onbekend");
+      const cleanedRawPrice = rawPriceText
+        .replace(/(\d)\s+([.,])/g, "$1$2")
+        .replace(/([.,])\s+(\d)/g, "$1$2")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+
+      // Structured header for detailed explanation
+      const headerLines = [] as string[];
+      headerLines.push(`Adres: ${scraped?.address ?? fundaUrl}`);
+      const listingDisplay = listingPriceNum ? `€ ${listingPriceNum.toLocaleString("nl-NL")}` : cleanedRawPrice;
+      headerLines.push(`Vraagprijs: ${listingDisplay}`);
+      headerLines.push(`Prijs per m2: ${pricePerM2 ?? "Onbekend"}`);
+      headerLines.push(`Woonoppervlakte: ${scraped?.livingArea ?? "Onbekend"}`);
+      headerLines.push(`Kamers: ${scraped?.rooms ?? "Onbekend"}`);
+      headerLines.push(`Bouwjaar: ${scraped?.yearBuilt ?? "Onbekend"}`);
+      headerLines.push("");
+
+      const combinedDetailed = `${headerLines.join("\n")}\n${sanitizeAiText(parsed.detailedExplanation)}`.trim();
+
+      const result = {
+        address: scraped?.address ?? fundaUrl,
+        valueExplanation: sanitizeAiText(parsed.valueExplanation),
+        recommendedBid: finalAdvice,
+        listingPriceRaw: scraped?.priceText,
+        listingPriceNumber: listingPriceNum,
+        listingPriceDetected: !!listingPriceNum,
+        conservativeBid: finalConservative,
+        averageBid: finalAverage,
+        highBid: finalHigh,
+        acceptanceEstimates: acceptance,
+        detailedExplanation: combinedDetailed,
+        viewingAdvice: sanitizeAiText(parsed.viewingAdvice),
+        neighborhoodInfo: sanitizeAiText(parsed.neighborhoodInfo),
+        fullText: sanitizeAiText(parsed.fullText || text),
+        pricePerM2: pricePerM2,
+        wasClamped: wasClamped,
+        originalBids: Object.keys(originalBids).length ? originalBids : undefined,
+        debugInfo: debugMode ? `Prompt:\n${prompt}\n\nAI-antwoord:\n${text}` : undefined,
+      };
+
+      return res.status(200).json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("API handler failed:", error);
