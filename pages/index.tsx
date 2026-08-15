@@ -291,10 +291,30 @@ export default function Home() {
           </p>
 
           <div className="tabs" style={{ marginTop: "1.75rem" }}>
-            <button className={`tab-button ${activeTab === "advies" ? "active" : ""}`} type="button" onClick={() => setActiveTab("advies")}>Advies</button>
-            <button className={`tab-button ${activeTab === "watKrijgIk" ? "active" : ""}`} type="button" onClick={() => setActiveTab("watKrijgIk")}>Wat krijg ik</button>
-            <button className={`tab-button ${activeTab === "overOns" ? "active" : ""}`} type="button" onClick={() => setActiveTab("overOns")}>Over ons</button>
-            <button className={`tab-button ${activeTab === "contact" ? "active" : ""}`} type="button" onClick={() => setActiveTab("contact")}>Contact</button>
+            <button className={`tab-button ${activeTab === "advies" ? "active" : ""}`} type="button" onClick={() => setActiveTab("advies")} aria-label="Advies">
+              <span className="tab-icon" aria-hidden>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L15 8H9L12 2Z" fill="#2563eb"/><path d="M6 10H18L16 22H8L6 10Z" fill="#93c5fd"/></svg>
+              </span>
+              <span className="tab-label">Advies</span>
+            </button>
+            <button className={`tab-button ${activeTab === "watKrijgIk" ? "active" : ""}`} type="button" onClick={() => setActiveTab("watKrijgIk")} aria-label="Wat krijg ik">
+              <span className="tab-icon" aria-hidden>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="4" width="18" height="3" rx="1" fill="#2563eb"/><rect x="3" y="10.5" width="18" height="3" rx="1" fill="#93c5fd"/><rect x="3" y="17" width="18" height="3" rx="1" fill="#bfdbfe"/></svg>
+              </span>
+              <span className="tab-label">Wat krijg ik</span>
+            </button>
+            <button className={`tab-button ${activeTab === "overOns" ? "active" : ""}`} type="button" onClick={() => setActiveTab("overOns")} aria-label="Over ons">
+              <span className="tab-icon" aria-hidden>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="8" r="3" fill="#2563eb"/><path d="M4 20c0-3.3 2.7-6 6-6h4c3.3 0 6 2.7 6 6" fill="#93c5fd"/></svg>
+              </span>
+              <span className="tab-label">Over ons</span>
+            </button>
+            <button className={`tab-button ${activeTab === "contact" ? "active" : ""}`} type="button" onClick={() => setActiveTab("contact")} aria-label="Contact">
+              <span className="tab-icon" aria-hidden>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 7v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7" stroke="#2563eb" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/><path d="M22 7l-10 7L2 7" stroke="#93c5fd" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </span>
+              <span className="tab-label">Contact</span>
+            </button>
           </div>
 
           {activeTab === "advies" ? (
