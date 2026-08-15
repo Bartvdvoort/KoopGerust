@@ -202,8 +202,8 @@ Schrijf het antwoord in het Nederlands.
 };
 
 const parseOpenAIResponse = (text: string, scraped: any | null) => {
-  // Attempt to find a JSON object in the model output
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  // Attempt to find a JSON object in the model output (non-greedy)
+  const jsonMatch = text.match(/\{[\s\S]*?\}/);
   let parsedJson: any = null;
 
   if (jsonMatch) {
@@ -218,7 +218,11 @@ const parseOpenAIResponse = (text: string, scraped: any | null) => {
   const ensureCurrency = (v: any) => {
     if (!v) return undefined;
     if (typeof v === "number") return `€ ${v.toLocaleString("nl-NL")}`;
-    if (typeof v === "string") return v.trim();
+    if (typeof v === "string") {
+      const parsed = parseFallbackNumber(v);
+      if (parsed) return `€ ${parsed.toLocaleString("nl-NL")}`;
+      return v.trim();
+    }
     return String(v);
   };
 
@@ -292,6 +296,12 @@ const parseOpenAIResponse = (text: string, scraped: any | null) => {
 const sanitizeAiText = (txt?: string) => {
   if (!txt) return txt || "";
   let t = String(txt || "");
+  // Remove raw JSON-like fragments, braces and brackets to avoid leaking internal keys
+  t = t.replace(/\{+|\}+|\[+|\]+/g, " ");
+  // Remove quoted number lists like "500","000","000"
+  t = t.replace(/"\s*\d{1,3}\s*"(?:\s*,\s*"\s*\d{1,3}\s*")+/g, " ");
+  // Remove common JSON key patterns (e.g. "valueExplanation":) to avoid merged keys in text
+  t = t.replace(/"?[A-Za-z0-9_]+"?\s*:\s*/g, " ");
   // Remove acceptance header lines (e.g. 'Kans op acceptatie (indicatie)')
   // Remove acceptance header blocks (including following lines listing percentages)
   t = t.replace(/Kans op acceptatie[^\n]*[\s\S]*?(?:\n\s*\n|$)/gim, "");
@@ -310,6 +320,8 @@ const sanitizeAiText = (txt?: string) => {
   // Remove lines that start with 'Kenmerken' and generic percentage lines
   t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
   t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
+  // Remove stray quoted numbers like "439.500" -> 439.500
+  t = t.replace(/"\s*([0-9]+[.,]?[0-9]*)\s*"/g, "$1");
   // Normalize spaces inside numbers like '€ 439. 500' -> '€ 439.500'
   t = t.replace(/(\d)\s+([.,])/g, "$1$2");
   t = t.replace(/([.,])\s+(\d)/g, "$1$2");
@@ -417,6 +429,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       // Move accidental percentage values from bid fields into acceptanceEstimates
       const originalBids: Record<string, any> = {};
       const acceptance: Record<string, string> = parsed.acceptanceEstimates ? { ...parsed.acceptanceEstimates } : {};
+      // sanitize acceptance values
+      Object.keys(acceptance).forEach(k => {
+        if (acceptance[k]) acceptance[k] = sanitizeAiText(String(acceptance[k]));
+      });
 
       const fields = ["conservativeBid", "averageBid", "highBid", "recommendedBid"] as const;
       fields.forEach((f) => {
