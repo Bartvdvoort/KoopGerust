@@ -103,7 +103,23 @@ export default function Home() {
     const margin = 16;
     const pageWidth = 210;
     const maxWidth = pageWidth - margin * 2;
+    const pageBottom = 280;
     let y = 20;
+
+    const ensureSpace = (height: number) => {
+      if (y + height > pageBottom) {
+        doc.addPage();
+        y = 20;
+      }
+    };
+
+    const writeLines = (lines: string[], lineHeight = 6) => {
+      lines.forEach((line) => {
+        ensureSpace(lineHeight);
+        doc.text(line, margin, y);
+        y += lineHeight;
+      });
+    };
 
     // Header band with brand
     doc.setFillColor(29, 78, 216); // #1d4ed8
@@ -122,29 +138,11 @@ export default function Home() {
     const hasDigits = (v: any) => /\d/.test(String(v || ""));
     const displayBid = (v: any) => (hasDigits(v) ? String(v) : "-");
 
-    // Sanitize AI text to strip internal debug/acceptance lines and sentences
     const sanitizeAiText = (txt: any) => {
       if (!txt) return "";
       let t = String(txt);
-      // Remove acceptance header blocks (including following lines listing percentages)
-      t = t.replace(/Kans op acceptatie[^\n]*[\s\S]*?(?:\n\s*\n|$)/gim, "");
-      // Remove any lines that list internal keys like conservativeBid: 80%
-      t = t.replace(/^\s*(conservativeBid|averageBid|highBid|adviceBid|advice)\s*[:=\-].*$/gim, "");
-      // Remove lines that show percentages for common Dutch labels
-      t = t.replace(/^\s*(voorzichtig|gemiddeld|hoog|adviesbod)\s*[:=\-]\s*\d+%.*$/gim, "");
-      // Remove generic key: 80% lines and 'Kenmerken' heading
-      t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
-      t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
-      // Split into sentences and filter out sentences mentioning acceptance chances or internal keys
-      const sentences = t.match(/[^.?!\n]+[.?!\n]*/g) || [t];
-      const filtered = sentences.filter((s) => {
-        return !/(kans[^.?!\n]*acceptat|acceptat[^.?!\n]*kans|conservativeBid|averageBid|highBid|adviceBid|adviesbod|kans op acceptatie|acceptatiekans|aanvaardingskans)/i.test(s);
-      });
-      t = filtered.join(" ");
-      // Normalize numeric spacing like '€ 439. 500' -> '€ 439.500'
       t = t.replace(/(\d)\s+([.,])/g, "$1$2");
       t = t.replace(/([.,])\s+(\d)/g, "$1$2");
-      // Collapse multiple spaces and normalize empty lines
       t = t.replace(/[ \t\u00A0]{2,}/g, " ");
       t = t.replace(/\n{2,}/g, "\n\n");
       t = t.split('\n').map((l: string) => l.trim()).join('\n');
@@ -195,6 +193,7 @@ export default function Home() {
     // Acceptance estimates: only show numeric/percent values
     const acceptanceEntries = Object.entries(report.acceptanceEstimates || {}).filter(([, v]) => /\d/.test(String(v || "")));
     if (acceptanceEntries.length > 0) {
+      ensureSpace(8 + acceptanceEntries.length * 7);
       y += 4;
       doc.setFont("helvetica", "bold");
       doc.setTextColor(13, 37, 85);
@@ -216,6 +215,7 @@ export default function Home() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
     doc.setTextColor(13, 37, 85);
+    ensureSpace(14);
     doc.text("Toelichting", margin, y);
     y += 8;
     doc.setFont("helvetica", "normal");
@@ -223,8 +223,8 @@ export default function Home() {
     doc.setTextColor(69, 85, 105);
     const sanitizedDetail = sanitizeAiText(report.detailedExplanation || report.valueExplanation || "-");
     const detailLines = doc.splitTextToSize(sanitizedDetail, maxWidth);
-    doc.text(detailLines, margin, y);
-    y += detailLines.length * 6 + 6;
+    writeLines(detailLines);
+    y += 6;
 
     // Woonwijk + Bezichtigingsadvies
     const smallSections = [
@@ -233,10 +233,7 @@ export default function Home() {
     ];
 
     smallSections.forEach(({ title, text }) => {
-      if (y > 250) {
-        doc.addPage();
-        y = 20;
-      }
+      ensureSpace(14);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(12);
       doc.setTextColor(13, 37, 85);
@@ -246,8 +243,8 @@ export default function Home() {
       doc.setFontSize(11);
       doc.setTextColor(69, 85, 105);
       const lines = doc.splitTextToSize(sanitizeAiText(text || "-"), maxWidth);
-      doc.text(lines, margin, y);
-      y += lines.length * 6 + 8;
+      writeLines(lines);
+      y += 8;
     });
 
     // Footer
@@ -267,7 +264,7 @@ export default function Home() {
     doc.setFontSize(11);
     const full = sanitizeAiText(report.fullText || report.detailedExplanation || "Geen aanvullende tekst beschikbaar.");
     const fullLines = doc.splitTextToSize(full, maxWidth);
-    doc.text(fullLines, margin, y);
+    writeLines(fullLines);
 
     doc.save(fileName);
     setDownloadMessage(`PDF ${fileName} is gedownload en wordt nu naar je downloads gestuurd.`);

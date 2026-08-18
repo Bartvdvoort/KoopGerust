@@ -176,11 +176,11 @@ Je bent een ervaren Nederlandse woninganalist. Schrijf een helder, praktisch en 
 Belangrijke instructies (Nederlands):
 - Controleer de vraagprijs (vraagprijs zoals opgegeven op Funda: ${listingPrice}). Je MAG NOOIT een bod adviseren dat lager is dan de vraagprijs die op Funda staat. Als je normaal gesproken een lager 'voorzichtig' bod zou geven, gebruik dan in plaats daarvan minimaal de vraagprijs.
 - Geef vier biedingen: conservativeBid, averageBid, highBid en adviceBid. Voor elk bod geef je ook een korte inschatting in procenten of een korte zin van de kans dat dat bod geaccepteerd wordt (bijv. "40% kans" of "laag/matig/hoog").
-- Geef daarnaast een korte valueExplanation, neighborhoodInfo en viewingAdvice.
-- Tot slot: lever het volledige, onbewerkte antwoord mee als fullText zodat het in het PDF opgenomen kan worden.
+- Geef daarnaast een korte valueExplanation, neighborhoodInfo en viewingAdvice. Schrijf voor neighborhoodInfo en viewingAdvice elk minstens twee concrete zinnen.
+- Houd elke toelichting compact en feitelijk. Verzin geen lokale feiten wanneer de beschikbare woninggegevens daarvoor onvoldoende zijn.
 
 Outputvereiste:
-Antwoord uitsluitend met één enkele JSON-object (zonder extra tekst) met de volgende keys: "conservativeBid", "averageBid", "highBid", "adviceBid", "acceptanceEstimates", "valueExplanation", "neighborhoodInfo", "viewingAdvice", "fullText".
+Antwoord uitsluitend met één enkele JSON-object (zonder extra tekst) met de volgende keys: "conservativeBid", "averageBid", "highBid", "adviceBid", "acceptanceEstimates", "valueExplanation", "neighborhoodInfo", "viewingAdvice".
 
 Formatvoorbeeld (moet exact parsebaar JSON zijn):
 {
@@ -191,8 +191,7 @@ Formatvoorbeeld (moet exact parsebaar JSON zijn):
   "acceptanceEstimates": { "conservativeBid": "70%", "averageBid": "50%", "highBid": "30%", "adviceBid": "50%" },
   "valueExplanation": "Korte uitleg over waarde en vergelijking...",
   "neighborhoodInfo": "Wijk, scholen, voorzieningen...",
-  "viewingAdvice": "Praktische tips voor bezichtiging...",
-  "fullText": "Hier komt het volledige onbewerkte rapport met alle toelichting."
+  "viewingAdvice": "Praktische tips voor bezichtiging..."
 }
 
 Belangrijk: Als je bij sommige velden onzeker bent, geef dan eerlijk een korte tekst met de reden. Gebruik altijd euro-formattering met symbool € en punten als duizendtalscheiding waar passend. Gebruik alleen platte tekst in de values (geen HTML of Markdown). Zorg dat alle biedingen minimaal gelijk zijn aan de vermeldde vraagprijs (indien beschikbaar).
@@ -392,43 +391,28 @@ const parseOpenAIResponse = (text: string, scraped: any | null) => {
 
 const sanitizeAiText = (txt?: string) => {
   if (!txt) return txt || "";
-  let t = String(txt || "");
-  // Remove raw JSON-like fragments, braces and brackets to avoid leaking internal keys
-  t = t.replace(/\{+|\}+|\[+|\]+/g, " ");
-  // Remove quoted number lists like "500","000","000"
-  t = t.replace(/"\s*\d{1,3}\s*"(?:\s*,\s*"\s*\d{1,3}\s*")+/g, " ");
-  // Remove common JSON key patterns (e.g. "valueExplanation":) to avoid merged keys in text
-  t = t.replace(/"?[A-Za-z0-9_]+"?\s*:\s*/g, " ");
-  // Remove acceptance header lines (e.g. 'Kans op acceptatie (indicatie)')
-  // Remove acceptance header blocks (including following lines listing percentages)
-  t = t.replace(/Kans op acceptatie[^\n]*[\s\S]*?(?:\n\s*\n|$)/gim, "");
-  // Remove lines that list internal keys like conservativeBid: 80%
-  t = t.replace(/^\s*(conservativeBid|averageBid|highBid|adviceBid|advice)\s*[:=\-].*$/gim, "");
-  // Remove lines that show percentages for common Dutch labels
-  t = t.replace(/^\s*(voorzichtig|gemiddeld|hoog|adviesbod)\s*[:=\-]\s*\d+%.*$/gim, "");
-  // Remove lines that show keys followed by percentage (generic)
-  t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
-  // Remove sentences that reference acceptance chances or internal keys (also handles inline sentences)
-  const sentences = t.match(/[^.?!\n]+[.?!\n]*/g) || [t];
-  const filtered = sentences.filter((s) => {
-    return !/(kans[^.?!\n]*acceptat|acceptat[^.?!\n]*kans|conservativeBid|averageBid|highBid|adviceBid|adviesbod|kans op acceptatie)/i.test(s);
-  });
-  t = filtered.join(" ");
-  // Remove lines that start with 'Kenmerken' and generic percentage lines
-  t = t.replace(/^\s*Kenmerken[:\s\-].*$/gim, "");
-  t = t.replace(/^\s*\w+\s*[:=\-]\s*\d+%.*$/gim, "");
-  // Remove stray quoted numbers like "439.500" -> 439.500
-  t = t.replace(/"\s*([0-9]+[.,]?[0-9]*)\s*"/g, "$1");
-  // Normalize spaces inside numbers like '€ 439. 500' -> '€ 439.500'
+  let t = String(txt);
+  // The API returns structured JSON, so preserve report content and only normalize formatting.
   t = t.replace(/(\d)\s+([.,])/g, "$1$2");
   t = t.replace(/([.,])\s+(\d)/g, "$1$2");
-  // Collapse multiple spaces and normalize empty lines
   t = t.replace(/[ \t\u00A0]{2,}/g, " ");
   t = t.replace(/\n{2,}/g, "\n\n");
-  // Trim each line and the whole text
   t = t.split('\n').map(l => l.trim()).join('\n');
   return t.trim();
 };
+
+const buildFullText = (report: {
+  valueExplanation: string;
+  neighborhoodInfo: string;
+  viewingAdvice: string;
+}) => [
+  "Waarde en biedstrategie",
+  sanitizeAiText(report.valueExplanation),
+  "Woonwijkinformatie",
+  sanitizeAiText(report.neighborhoodInfo),
+  "Bezichtigingsadvies",
+  sanitizeAiText(report.viewingAdvice),
+].join("\n\n");
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data | ErrorData>) {
   if (req.method === "GET") {
@@ -477,6 +461,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "woningrapport",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["conservativeBid", "averageBid", "highBid", "adviceBid", "acceptanceEstimates", "valueExplanation", "neighborhoodInfo", "viewingAdvice"],
+            properties: {
+              conservativeBid: { type: "string" },
+              averageBid: { type: "string" },
+              highBid: { type: "string" },
+              adviceBid: { type: "string" },
+              acceptanceEstimates: {
+                type: "object",
+                additionalProperties: false,
+                required: ["conservativeBid", "averageBid", "highBid", "adviceBid"],
+                properties: {
+                  conservativeBid: { type: "string" },
+                  averageBid: { type: "string" },
+                  highBid: { type: "string" },
+                  adviceBid: { type: "string" },
+                },
+              },
+              valueExplanation: { type: "string" },
+              neighborhoodInfo: { type: "string" },
+              viewingAdvice: { type: "string" },
+            },
+          },
+        },
+      },
       messages: [
         {
           role: "system",
@@ -484,8 +500,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         },
         { role: "user", content: prompt },
       ],
-      max_tokens: 600,
-      temperature: 0.8,
+      max_tokens: 1000,
+      temperature: 0.3,
     });
 
     const text = completion.choices?.[0]?.message?.content ?? "";
@@ -647,7 +663,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         detailedExplanation: combinedDetailed,
         viewingAdvice: sanitizeAiText(parsed.viewingAdvice),
         neighborhoodInfo: sanitizeAiText(parsed.neighborhoodInfo),
-        fullText: sanitizeAiText(parsed.fullText || text),
+        fullText: buildFullText(parsed),
         pricePerM2: pricePerM2,
         wasClamped: wasClamped,
         originalBids: Object.keys(originalBids).length ? originalBids : undefined,

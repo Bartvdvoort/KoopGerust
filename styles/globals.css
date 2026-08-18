@@ -22,7 +22,6 @@ body {
   background:
     linear-gradient(rgba(255,255,255,0.72), rgba(255,255,255,0.72)),
     url('/images/house-bg.svg') center/cover no-repeat,
-    url('/images/house-bg.jpg') center/cover no-repeat,
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 400'><rect width='800' height='400' fill='%23e6f2ff'/><g transform='translate(80,60)'><rect x='40' y='120' width='220' height='120' rx='12' fill='%23ffffff' stroke='%23d1e9ff' stroke-width='2'/><polygon points='30,120 150,40 270,120' fill='%23ffcf6b' /><circle cx='330' cy='260' r='40' fill='%2397e6a9'/><rect x='320' y='220' width='20' height='40' rx='4' fill='%2366c17a' /><rect x='360' y='220' width='20' height='40' rx='4' fill='%2366c17a' /></g></svg>") center/cover no-repeat;
   background-attachment: fixed;
   background-color: #f4f7fb;
@@ -333,7 +332,58 @@ a {
 
 @media (max-width: 700px) {
   .container {
-    padding: 1.25rem;
+    width: 100%;
+    margin: 0 auto;
+    padding: 1rem;
+  }
+
+  .hero {
+    justify-items: center;
+  }
+
+  .hero-copy,
+  .input-card,
+  .report-card,
+  .cta-banner {
+    width: 100%;
+    max-width: 34rem;
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  .hero-copy {
+    text-align: left;
+  }
+
+  .hero-copy p {
+    margin-right: auto;
+    margin-left: 0;
+  }
+
+  .tabs {
+    justify-content: center;
+    max-width: 100%;
+  }
+
+  .report-heading > div {
+    flex-direction: column;
+    gap: 0.75rem !important;
+    text-align: left;
+  }
+
+  .download-row {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: left;
+  }
+
+  .download-row > div:last-child {
+    width: 100%;
+  }
+
+  .cta-banner {
+    align-items: stretch;
+    text-align: left;
   }
 
   .feature-list {
@@ -348,7 +398,7 @@ a {
   body {
     background:
       linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)),
-      url('/images/house-bg.jpg') center/cover no-repeat,
+      url('/images/house-bg.svg') center/cover no-repeat,
       url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 400'><rect width='800' height='400' fill='%23e6f2ff'/><g transform='translate(80,60)'><rect x='40' y='120' width='220' height='120' rx='12' fill='%23ffffff' stroke='%23d1e9ff' stroke-width='2'/><polygon points='30,120 150,40 270,120' fill='%23ffcf6b' /><circle cx='330' cy='260' r='40' fill='%2397e6a9'/><rect x='320' y='220' width='20' height='40' rx='4' fill='%2366c17a' /><rect x='360' y='220' width='20' height='40' rx='4' fill='%2366c17a' /></g></svg>") center/cover no-repeat;
     background-attachment: scroll;
   }
@@ -359,26 +409,25 @@ a {
 @media (max-width: 480px) {
   .feature-list { display: none !important; }
 
-  /* Horizontal, scrollable tabs on mobile to reduce vertical length and avoid cramped labels */
   .tabs {
     display: flex;
     flex-direction: row;
-    gap: 8px;
-    padding: 8px 6px;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 6px;
+    overflow: hidden;
   }
-  .tabs::-webkit-scrollbar { display: none; }
   .tab-button {
-    flex: 0 0 auto;
-    padding: 8px 12px;
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 7px 6px;
     border-radius: 999px;
     background: transparent;
     border: 1px solid rgba(15,23,42,0.06);
     color: #475569;
     font-weight: 700;
-    font-size: 15px;
+    font-size: 13px;
     white-space: nowrap;
   }
   .tab-button.active {
