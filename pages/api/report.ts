@@ -201,14 +201,49 @@ Schrijf het antwoord in het Nederlands.
 `;
 };
 
+const extractJsonObject = (text: string) => {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+
+  return null;
+};
+
 const parseOpenAIResponse = (text: string, scraped: any | null) => {
-  // Attempt to find a JSON object in the model output (non-greedy)
-  const jsonMatch = text.match(/\{[\s\S]*?\}/);
+  // Find the complete outer JSON object, including nested objects such as acceptanceEstimates.
+  const jsonObject = extractJsonObject(text);
   let parsedJson: any = null;
 
-  if (jsonMatch) {
+  if (jsonObject) {
     try {
-      parsedJson = JSON.parse(jsonMatch[0]);
+      parsedJson = JSON.parse(jsonObject);
     } catch (e) {
       // ignore parse error and fall back
       parsedJson = null;
@@ -236,6 +271,68 @@ const parseOpenAIResponse = (text: string, scraped: any | null) => {
   const listingPriceNum = parseFallbackNumber(scraped?.priceText);
 
   if (parsedJson) {
+    // Helper to normalize bid-like fields that may be arrays, CSV strings, or objects
+    const normalizeBidField = (raw: any) => {
+      if (raw === undefined || raw === null) return undefined;
+      // If array, find first element that contains a digit
+      if (Array.isArray(raw)) {
+        for (const el of raw) {
+          const n = parseFallbackNumber(String(el));
+          if (n) return `€ ${n.toLocaleString("nl-NL")}`;
+        }
+      }
+      // If object with values, try common keys
+      if (typeof raw === "object") {
+        const candidates = [raw.value, raw.amount, raw.price, raw['@value']];
+        for (const c of candidates) {
+          if (!c) continue;
+          const n = parseFallbackNumber(String(c));
+          if (n) return `€ ${n.toLocaleString("nl-NL")}`;
+        }
+      }
+      // If string, try to extract first currency-like number
+      if (typeof raw === "string") {
+        // remove stray brackets/quotes
+        const cleaned = raw.replace(/[\[\]\{\}"]+/g, " ");
+        const m = cleaned.match(/€\s?[0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?/);
+        if (m) return m[0].replace(/\s+/g, " ");
+        const num = parseFallbackNumber(cleaned);
+        if (num) return `€ ${num.toLocaleString("nl-NL")}`;
+      }
+      return undefined;
+    };
+
+    // Normalize acceptance estimates which may appear as arrays or CSV lists
+    const normalizeAcceptance = (raw: any) => {
+      if (!raw) return undefined;
+      // If already an object of labels -> sanitize values
+      if (typeof raw === "object" && !Array.isArray(raw)) {
+        const out: Record<string, string> = {};
+        Object.entries(raw).forEach(([k, v]) => {
+          out[k] = sanitizeAiText(String(v));
+        });
+        return out;
+      }
+      // If array of percents, map in order to conservative/average/high/advice
+      if (Array.isArray(raw)) {
+        const keys = ["conservativeBid", "averageBid", "highBid", "adviceBid"];
+        const out: Record<string, string> = {};
+        raw.forEach((v, i) => { out[keys[i] || `extra${i}`] = sanitizeAiText(String(v)); });
+        return out;
+      }
+      // If string with multiple percentages like "60%, 50%, 30%, 40%" or quoted list
+      if (typeof raw === "string") {
+        const cleaned = raw.replace(/[\[\]\{\}"]+/g, " ");
+        const parts = cleaned.split(/[,;\n]/).map(p => p.trim()).filter(Boolean);
+        if (parts.length > 1 && parts.every(p => /\d+%/.test(p))) {
+          const keys = ["conservativeBid", "averageBid", "highBid", "adviceBid"];
+          const out: Record<string, string> = {};
+          parts.forEach((p, i) => out[keys[i] || `extra${i}`] = sanitizeAiText(p));
+          return out;
+        }
+      }
+      return undefined;
+    };
     // Ensure bids are not below listing price (if known)
     const clampBid = (s: any) => {
       if (!s) return s;
@@ -247,10 +344,10 @@ const parseOpenAIResponse = (text: string, scraped: any | null) => {
       return ensureCurrency(s);
     };
 
-    const conservativeBid = clampBid(parsedJson.conservativeBid);
-    const averageBid = clampBid(parsedJson.averageBid);
-    const highBid = clampBid(parsedJson.highBid);
-    const adviceBid = clampBid(parsedJson.adviceBid) || averageBid || conservativeBid || highBid;
+    const conservativeBid = clampBid(normalizeBidField(parsedJson.conservativeBid) ?? parsedJson.conservativeBid);
+    const averageBid = clampBid(normalizeBidField(parsedJson.averageBid) ?? parsedJson.averageBid);
+    const highBid = clampBid(normalizeBidField(parsedJson.highBid) ?? parsedJson.highBid);
+    const adviceBid = clampBid(normalizeBidField(parsedJson.adviceBid ?? parsedJson.advice) ?? parsedJson.adviceBid ?? parsedJson.recommendedBid) || averageBid || conservativeBid || highBid;
 
     return {
       valueExplanation: parsedJson.valueExplanation || parsedJson.waarde || "Kan de waarde niet exact inschatten.",
@@ -258,7 +355,7 @@ const parseOpenAIResponse = (text: string, scraped: any | null) => {
       conservativeBid,
       averageBid,
       highBid,
-      acceptanceEstimates: parsedJson.acceptanceEstimates || parsedJson.acceptanceEstimates || undefined,
+      acceptanceEstimates: normalizeAcceptance(parsedJson.acceptanceEstimates ?? parsedJson.acceptance) || undefined,
       detailedExplanation: parsedJson.valueExplanation || parsedJson.toelichting || (parsedJson.fullText ? parsedJson.fullText.substring(0, 800) : "Geen uitgebreide toelichting beschikbaar."),
       viewingAdvice: parsedJson.viewingAdvice || parsedJson.bezichtigingsadvies || "Geen bezichtigingsadvies beschikbaar.",
       neighborhoodInfo: parsedJson.neighborhoodInfo || parsedJson.woonwijk || "Geen aanvullende woonwijkinformatie beschikbaar.",
